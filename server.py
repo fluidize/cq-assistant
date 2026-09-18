@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 import sys
@@ -6,11 +8,17 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    from pypdf import PdfReader
+except ImportError:  # optional dependency, only needed for PDF uploads
+    PdfReader = None
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
 
 DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 DEFAULT_MODEL = "mimo-v2.5"
+DEFAULT_CONTEXT_WINDOW = 1000000
 MAX_DOC_CHARS = 20000
 
 STATIC_FILES = {
@@ -32,12 +40,21 @@ CONFIG = load_config()
 DOCUMENTS = {}
 
 
+def context_window():
+    try:
+        window = int(CONFIG.get("context_window", DEFAULT_CONTEXT_WINDOW))
+    except (TypeError, ValueError):
+        return DEFAULT_CONTEXT_WINDOW
+    return window if window > 0 else DEFAULT_CONTEXT_WINDOW
+
+
 def _llm_request(messages, session_id, stream):
     base_url = CONFIG.get("base_url", DEFAULT_BASE_URL).rstrip("/")
     model = CONFIG.get("model", DEFAULT_MODEL)
     payload = {"model": model, "messages": messages}
     if stream:
         payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
     request = urllib.request.Request(
         base_url + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -64,12 +81,15 @@ def iter_llm_stream(response):
             chunk = json.loads(data)
         except json.JSONDecodeError:
             continue
+        usage = chunk.get("usage")
+        if usage:
+            yield {"usage": usage}
         choices = chunk.get("choices") or []
         if not choices:
             continue
         text = choices[0].get("delta", {}).get("content")
         if text:
-            yield text
+            yield {"text": text}
 
 
 def error_detail(error):
@@ -83,6 +103,12 @@ def error_detail(error):
     if isinstance(parsed, str):
         return parsed.strip()
     return detail.strip()
+
+
+def extract_pdf_text(data):
+    reader = PdfReader(io.BytesIO(data))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    return "\n\n".join(pages).strip()
 
 
 def build_messages(history, document_ids):
@@ -124,8 +150,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             with upstream:
-                for text in iter_llm_stream(upstream):
-                    self._write_event({"text": text})
+                for event in iter_llm_stream(upstream):
+                    if "usage" in event:
+                        usage = event["usage"]
+                        self._write_event(
+                            {
+                                "usage": {
+                                    "prompt_tokens": usage.get("prompt_tokens"),
+                                    "completion_tokens": usage.get("completion_tokens"),
+                                    "total_tokens": usage.get("total_tokens"),
+                                    "context_window": context_window(),
+                                }
+                            }
+                        )
+                    elif "text" in event:
+                        self._write_event({"text": event["text"]})
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -167,6 +206,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in STATIC_FILES:
             self._serve_static(self.path)
+        elif self.path == "/api/config":
+            self._send_json(
+                200,
+                {
+                    "model": CONFIG.get("model", DEFAULT_MODEL),
+                    "context_window": context_window(),
+                },
+            )
         elif self.path == "/api/documents":
             self._send_json(
                 200,
@@ -183,6 +230,25 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             name = (body.get("name") or "untitled").strip()
             content = body.get("content") or ""
+            if (body.get("encoding") or "text") == "base64":
+                try:
+                    raw = base64.b64decode(content)
+                except Exception as error:  # noqa: BLE001
+                    self._send_json(400, {"error": f"Invalid base64 payload: {error}"})
+                    return
+                if raw[:4] == b"%PDF" or name.lower().endswith(".pdf"):
+                    if PdfReader is None:
+                        self._send_json(
+                            500, {"error": "pypdf is not installed (pip install pypdf)"}
+                        )
+                        return
+                    try:
+                        content = extract_pdf_text(raw)
+                    except Exception as error:  # noqa: BLE001
+                        self._send_json(400, {"error": f"Could not parse PDF: {error}"})
+                        return
+                else:
+                    content = raw.decode("utf-8", errors="replace")
             doc_id = uuid.uuid4().hex
             DOCUMENTS[doc_id] = {"name": name, "content": content}
             self._send_json(201, {"id": doc_id, "name": name, "chars": len(content)})

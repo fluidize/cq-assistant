@@ -1,0 +1,7 @@
+{
+  "api_key": "API_KEY",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "model": "mimo-v2.5",
+  "context_window": 1000000,
+  "instructions": "You are a helpful assistant for commissioning and qualifications document verification. Answer using the provided documents as the source of truth, and say when the answer is not found in them."
+}

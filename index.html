@@ -27,7 +27,12 @@
 
     <main class="chat">
       <div id="chat-area" class="chat-area">
-        <p class="empty">Start the conversation</p>
+        <div id="chat-scroll" class="chat-scroll">
+          <p class="empty">Start the conversation</p>
+        </div>
+        <div class="chat-footer">
+          <span id="ctx-usage">0 / — tokens</span>
+        </div>
       </div>
 
       <form id="prompt-form" class="prompt-area">
@@ -39,10 +44,13 @@
             placeholder="Press enter to send..."
           ></textarea>
         </div>
+        <button type="button" id="reset-btn" class="reset-btn">New chat</button>
       </form>
     </main>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
