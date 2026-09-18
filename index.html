@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documents Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="documents">
+      <div class="documents-panel">
+        <h2>Documents</h2>
+        <label class="upload-btn">
+          Upload
+          <input type="file" id="file-input" multiple hidden />
+        </label>
+      </div>
+      <ul id="document-list" class="document-list"></ul>
+    </aside>
+
+    <main class="chat">
+      <div id="chat-area" class="chat-area">
+        <p class="empty">Start the conversation</p>
+      </div>
+
+      <form id="prompt-form" class="prompt-area">
+        <div class="prompt-box">
+          <textarea
+            id="prompt-input"
+            class="prompt-input"
+            rows="1"
+            placeholder="Press enter to send..."
+          ></textarea>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
