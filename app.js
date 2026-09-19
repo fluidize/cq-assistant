@@ -6,6 +6,10 @@ const promptForm = document.getElementById("prompt-form");
 const promptInput = document.getElementById("prompt-input");
 const resetBtn = document.getElementById("reset-btn");
 const findingsList = document.getElementById("findings-list");
+const findingModal = document.getElementById("finding-modal");
+const findingModalName = document.getElementById("finding-modal-name");
+const findingModalType = document.getElementById("finding-modal-type");
+const findingModalNotes = document.getElementById("finding-modal-notes");
 
 const HISTORY_KEY = "cq.history";
 const SESSION_KEY = "cq.sessionId";
@@ -42,7 +46,11 @@ function loadSessionId() {
 }
 
 function saveChat() {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch (error) {
+    console.error("Could not save chat history:", error);
+  }
 }
 
 function loadUsedTokens() {
@@ -109,15 +117,10 @@ if (location.protocol === "file:") {
   renderHistory();
 }
 
-function renderMarkdown(container, text, animate) {
+function renderMarkdown(container, text) {
   const target = container.querySelector(".message-body") || container;
   if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
     target.textContent = text;
-    if (animate) {
-      animateNewWords(target);
-    } else {
-      target._stream = { length: target.textContent.length };
-    }
     scrollToBottom();
     return;
   }
@@ -126,53 +129,7 @@ function renderMarkdown(container, text, animate) {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   });
-  if (animate) {
-    animateNewWords(target);
-  } else {
-    target._stream = { length: target.textContent.length };
-  }
   scrollToBottom();
-}
-
-function animateNewWords(target) {
-  const state = target._stream || (target._stream = { length: 0 });
-  const newStart = state.length;
-  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null);
-  const nodes = [];
-  let node;
-  while ((node = walker.nextNode())) nodes.push(node);
-
-  let seen = 0;
-  nodes.forEach((textNode) => {
-    const length = textNode.nodeValue.length;
-    const nodeStart = seen;
-    seen += length;
-    if (!textNode.nodeValue.trim()) return;
-    if (nodeStart + length <= newStart) return;
-    wrapWords(textNode, Math.max(0, newStart - nodeStart));
-  });
-  state.length = seen;
-}
-
-function wrapWords(textNode, cut) {
-  const value = textNode.nodeValue;
-  const fresh = value.slice(cut);
-  if (!fresh) return;
-  const fragment = document.createDocumentFragment();
-  const oldPart = value.slice(0, cut);
-  if (oldPart) fragment.append(document.createTextNode(oldPart));
-  fresh.split(/(\s+)/).forEach((token) => {
-    if (!token) return;
-    if (/^\s+$/.test(token)) {
-      fragment.append(document.createTextNode(token));
-    } else {
-      const span = document.createElement("span");
-      span.className = "word";
-      span.textContent = token;
-      fragment.append(span);
-    }
-  });
-  textNode.parentNode.replaceChild(fragment, textNode);
 }
 
 function createStreamRenderer(bubble) {
@@ -385,9 +342,23 @@ function renderFindings() {
     notes.textContent = finding.notes || "";
 
     li.append(head, notes);
+    li.addEventListener("click", () => openFinding(finding));
     findingsList.append(li);
   });
 }
+
+function openFinding(finding) {
+  findingModalName.textContent =
+    finding.name || finding.document_id || "document";
+  findingModalType.className = "finding-type " + (finding.type || "");
+  findingModalType.textContent = finding.type || "";
+  findingModalNotes.textContent = finding.notes || "";
+  findingModal.showModal();
+}
+
+findingModal.addEventListener("click", (event) => {
+  if (event.target === findingModal) findingModal.close();
+});
 
 document.querySelectorAll(".finding-filter").forEach((button) => {
   button.addEventListener("click", () => {
@@ -424,6 +395,7 @@ promptForm.addEventListener("submit", async (event) => {
   let reasoning = "";
   let reply = "";
   let sawText = false;
+  const tools = [];
 
   const ensureBubble = () => {
     if (bubble) return bubble;
@@ -443,6 +415,7 @@ promptForm.addEventListener("submit", async (event) => {
       toolLog.className = "tool-log";
       bubble.insertBefore(toolLog, bubble.querySelector(".message-body"));
     }
+    tools.push(tool);
     toolLog.append(createToolCall(tool));
     scrollToBottom();
   };
@@ -485,13 +458,14 @@ promptForm.addEventListener("submit", async (event) => {
   }
   loading.remove();
   if (bubble) {
-    renderMarkdown(bubble, reply, false);
+    renderMarkdown(bubble, reply);
   }
-  if (reply) {
+  if (reply || tools.length) {
     history.push({
       role: "assistant",
       content: reply,
       reasoning: reasoning || undefined,
+      tools: tools.length ? tools : undefined,
     });
     saveChat();
   }
@@ -579,7 +553,12 @@ promptInput.addEventListener("keydown", (event) => {
 
 function renderHistory() {
   history.forEach((message) =>
-    appendMessage(message.role, message.content, message.reasoning)
+    appendMessage(
+      message.role,
+      message.content,
+      message.reasoning,
+      message.tools
+    )
   );
 }
 
@@ -596,13 +575,19 @@ resetBtn.addEventListener("click", () => {
   stick = true;
 });
 
-function appendMessage(role, text, reasoning) {
+function appendMessage(role, text, reasoning, tools) {
   const empty = chatScroll.querySelector(".empty");
   if (empty) empty.remove();
 
   const div = createMessage(role);
   if (role === "assistant" && reasoning) {
     div.prepend(createThinking(reasoning));
+  }
+  if (role === "assistant" && tools && tools.length) {
+    const toolLog = document.createElement("div");
+    toolLog.className = "tool-log";
+    tools.forEach((tool) => toolLog.append(createToolCall(tool)));
+    div.insertBefore(toolLog, div.querySelector(".message-body"));
   }
   if (role === "assistant") {
     renderMarkdown(div, text);

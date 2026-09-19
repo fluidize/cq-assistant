@@ -194,22 +194,21 @@ def execute_tool(name, arguments):
     return {"error": f"unknown tool: {name}"}
 
 
-def accumulate_tool_calls(store, deltas):
-    for delta in deltas:
-        index = delta.get("index", 0)
-        entry = store.setdefault(
-            index, {"id": "", "name": "", "arguments": ""}
-        )
-        if delta.get("id"):
-            entry["id"] = delta["id"]
-        function = delta.get("function") or {}
-        if function.get("name"):
-            entry["name"] = function["name"]
-        if function.get("arguments"):
-            entry["arguments"] += function["arguments"]
+def accumulate_tool_calls(store, delta):
+    index = delta.get("index", 0)
+    entry = store.setdefault(
+        index, {"id": "", "name": "", "arguments": ""}
+    )
+    if delta.get("id"):
+        entry["id"] = delta["id"]
+    function = delta.get("function") or {}
+    if function.get("name"):
+        entry["name"] = function["name"]
+    if function.get("arguments"):
+        entry["arguments"] += function["arguments"]
 
 
-def _llm_request(messages, session_id, stream):
+def _llm_request(messages, session_id):
     base_url = CONFIG.get("base_url", DEFAULT_BASE_URL).rstrip("/")
     model = CONFIG.get("model", DEFAULT_MODEL)
     payload = {
@@ -217,10 +216,9 @@ def _llm_request(messages, session_id, stream):
         "messages": messages,
         "tools": TOOLS,
         "tool_choice": "auto",
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
-    if stream:
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
     request = urllib.request.Request(
         base_url + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -232,7 +230,6 @@ def _llm_request(messages, session_id, stream):
         },
         method="POST",
     )
-    print(f"_llm_request called: {session_id}")
     return urllib.request.urlopen(request, timeout=120)
 
 
@@ -344,7 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                         elif "reasoning" in event:
                             self._write_event({"reasoning": event["reasoning"]})
                         elif "tool_call" in event:
-                            accumulate_tool_calls(tool_calls, [event["tool_call"]])
+                            accumulate_tool_calls(tool_calls, event["tool_call"])
                 if not tool_calls:
                     break
                 ordered = [tool_calls[index] for index in sorted(tool_calls)]
@@ -388,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                         }
                     )
                 try:
-                    upstream = _llm_request(messages, session_id, True)
+                    upstream = _llm_request(messages, session_id)
                 except urllib.error.HTTPError as error:
                     self._write_event({"error": error_detail(error)})
                     break
@@ -488,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
                 body.get("messages", []), body.get("document_ids", [])
             )
             try:
-                upstream = _llm_request(messages, session_id, True)
+                upstream = _llm_request(messages, session_id)
             except urllib.error.HTTPError as error:
                 self._send_json(error.code, {"error": error_detail(error)})
                 return
