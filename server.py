@@ -19,7 +19,8 @@ CONFIG_PATH = os.path.join(ROOT, "config.json")
 DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 DEFAULT_MODEL = "mimo-v2.5"
 DEFAULT_CONTEXT_WINDOW = 1000000
-MAX_DOC_CHARS = 20000
+DEFAULT_DOC_LIMIT = 8000
+MAX_TOOL_ROUNDS = 8
 
 STATIC_FILES = {
     "/": "index.html",
@@ -27,6 +28,71 @@ STATIC_FILES = {
     "/styles.css": "styles.css",
     "/app.js": "app.js",
 }
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_documents",
+            "description": "List the uploaded documents with their IDs, filenames and sizes.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_document",
+            "description": (
+                "Read the text of an uploaded document by ID. Use offset and "
+                "limit to page through long documents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Document ID from list_documents.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Character offset to start reading from (default 0).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum characters to return (default 8000).",
+                    },
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish_verification",
+            "description": "Record the final verification result and end the review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "type": "string",
+                        "description": "Claim or requirement being verified.",
+                    },
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["pass", "fail", "needs_review"],
+                        "description": "Verification outcome.",
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Supporting evidence with document citations.",
+                    },
+                },
+                "required": ["claim", "verdict", "evidence"],
+            },
+        },
+    },
+]
 
 
 def load_config():
@@ -38,6 +104,7 @@ def load_config():
 
 CONFIG = load_config()
 DOCUMENTS = {}
+VERIFICATION_RESULTS = []
 
 
 def context_window():
@@ -48,10 +115,93 @@ def context_window():
     return window if window > 0 else DEFAULT_CONTEXT_WINDOW
 
 
+def list_documents():
+    return [
+        {"id": doc_id, "name": doc["name"], "chars": len(doc["content"])}
+        for doc_id, doc in DOCUMENTS.items()
+    ]
+
+
+def get_document(doc_id, offset=0, limit=None):
+    doc = DOCUMENTS.get(doc_id)
+    if not doc:
+        return {"error": f"document not found: {doc_id}"}
+    content = doc["content"]
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit) if limit else DEFAULT_DOC_LIMIT
+    except (TypeError, ValueError):
+        limit = DEFAULT_DOC_LIMIT
+    limit = max(1, limit)
+    chunk = content[offset : offset + limit]
+    return {
+        "id": doc_id,
+        "name": doc["name"],
+        "offset": offset,
+        "returned_chars": len(chunk),
+        "total_chars": len(content),
+        "eof": offset + limit >= len(content),
+        "content": chunk,
+    }
+
+
+def finish_verification(claim, verdict, evidence):
+    result = {
+        "claim": claim or "",
+        "verdict": verdict or "",
+        "evidence": evidence or "",
+    }
+    VERIFICATION_RESULTS.append(result)
+    return {"status": "recorded", **result}
+
+
+def execute_tool(name, arguments):
+    try:
+        args = json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return {"error": "invalid JSON arguments"}
+    if not isinstance(args, dict):
+        return {"error": "arguments must be a JSON object"}
+    if name == "list_documents":
+        return {"documents": list_documents()}
+    if name == "get_document":
+        return get_document(
+            args.get("id"), args.get("offset", 0), args.get("limit")
+        )
+    if name == "finish_verification":
+        return finish_verification(
+            args.get("claim"), args.get("verdict"), args.get("evidence")
+        )
+    return {"error": f"unknown tool: {name}"}
+
+
+def accumulate_tool_calls(store, deltas):
+    for delta in deltas:
+        index = delta.get("index", 0)
+        entry = store.setdefault(
+            index, {"id": "", "name": "", "arguments": ""}
+        )
+        if delta.get("id"):
+            entry["id"] = delta["id"]
+        function = delta.get("function") or {}
+        if function.get("name"):
+            entry["name"] = function["name"]
+        if function.get("arguments"):
+            entry["arguments"] += function["arguments"]
+
+
 def _llm_request(messages, session_id, stream):
     base_url = CONFIG.get("base_url", DEFAULT_BASE_URL).rstrip("/")
     model = CONFIG.get("model", DEFAULT_MODEL)
-    payload = {"model": model, "messages": messages}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": TOOLS,
+        "tool_choice": "auto",
+    }
     if stream:
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
@@ -66,6 +216,7 @@ def _llm_request(messages, session_id, stream):
         },
         method="POST",
     )
+    print(f"_llm_request called: {session_id}")
     return urllib.request.urlopen(request, timeout=120)
 
 
@@ -87,9 +238,15 @@ def iter_llm_stream(response):
         choices = chunk.get("choices") or []
         if not choices:
             continue
-        text = choices[0].get("delta", {}).get("content")
+        delta = choices[0].get("delta", {})
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning:
+            yield {"reasoning": reasoning}
+        text = delta.get("content")
         if text:
             yield {"text": text}
+        for tool_call in delta.get("tool_calls") or []:
+            yield {"tool_call": tool_call}
 
 
 def error_detail(error):
@@ -116,14 +273,13 @@ def build_messages(history, document_ids):
     instructions = CONFIG.get("instructions")
     if instructions:
         parts.append(instructions.strip())
-    context = []
-    for doc_id in document_ids:
-        doc = DOCUMENTS.get(doc_id)
-        if not doc:
-            continue
-        context.append(f"--- {doc['name']} ---\n{doc['content'][:MAX_DOC_CHARS]}")
-    if context:
-        parts.append("Use the following documents as context:\n\n" + "\n\n".join(context))
+    if document_ids:
+        parts.append(
+            "Documents are available for this request. Use the list_documents "
+            "tool to see them and the get_document tool to read their contents "
+            "(paging with offset/limit as needed). Do not assume document "
+            "contents. Call finish_verification once you reach a final verdict."
+        )
     messages = []
     if parts:
         messages.append({"role": "system", "content": "\n\n".join(parts)})
@@ -143,28 +299,98 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _stream_response(self, upstream):
+    def _stream_response(self, messages, session_id, upstream):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
-            with upstream:
-                for event in iter_llm_stream(upstream):
-                    if "usage" in event:
-                        usage = event["usage"]
+            for _ in range(MAX_TOOL_ROUNDS):
+                tool_calls = {}
+                assistant_text = ""
+                with upstream:
+                    for event in iter_llm_stream(upstream):
+                        if "usage" in event:
+                            usage = event["usage"]
+                            self._write_event(
+                                {
+                                    "usage": {
+                                        "prompt_tokens": usage.get("prompt_tokens"),
+                                        "completion_tokens": usage.get("completion_tokens"),
+                                        "total_tokens": usage.get("total_tokens"),
+                                        "context_window": context_window(),
+                                    }
+                                }
+                            )
+                        elif "text" in event:
+                            assistant_text += event["text"]
+                            self._write_event({"text": event["text"]})
+                        elif "reasoning" in event:
+                            self._write_event({"reasoning": event["reasoning"]})
+                        elif "tool_call" in event:
+                            accumulate_tool_calls(tool_calls, [event["tool_call"]])
+                if not tool_calls:
+                    break
+                ordered = [tool_calls[index] for index in sorted(tool_calls)]
+                calls = []
+                for index, call in enumerate(ordered):
+                    calls.append(
+                        {
+                            "id": call["id"] or f"call_{index}",
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"] or "{}",
+                            },
+                        }
+                    )
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant_text or None,
+                        "tool_calls": calls,
+                    }
+                )
+                finished = False
+                for call in calls:
+                    result = execute_tool(
+                        call["function"]["name"], call["function"]["arguments"]
+                    )
+                    self._write_event(
+                        {
+                            "tool": {
+                                "name": call["function"]["name"],
+                                "arguments": call["function"]["arguments"],
+                                "result": result,
+                            }
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": json.dumps(result),
+                        }
+                    )
+                    if call["function"]["name"] == "finish_verification":
+                        finished = True
                         self._write_event(
                             {
-                                "usage": {
-                                    "prompt_tokens": usage.get("prompt_tokens"),
-                                    "completion_tokens": usage.get("completion_tokens"),
-                                    "total_tokens": usage.get("total_tokens"),
-                                    "context_window": context_window(),
-                                }
+                                "text": (
+                                    "\n\n**Verification recorded**\n\n"
+                                    f"- Claim: {result.get('claim', '')}\n"
+                                    f"- Verdict: {result.get('verdict', '')}\n"
+                                    f"- Evidence: {result.get('evidence', '')}\n"
+                                )
                             }
                         )
-                    elif "text" in event:
-                        self._write_event({"text": event["text"]})
+                if finished:
+                    break
+                try:
+                    upstream = _llm_request(messages, session_id, True)
+                except urllib.error.HTTPError as error:
+                    self._write_event({"error": error_detail(error)})
+                    break
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -254,18 +480,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(201, {"id": doc_id, "name": name, "chars": len(content)})
         elif self.path == "/api/chat":
             body = self._read_json()
+            session_id = body.get("session_id")
             messages = build_messages(
                 body.get("messages", []), body.get("document_ids", [])
             )
             try:
-                upstream = _llm_request(messages, body.get("session_id"), True)
+                upstream = _llm_request(messages, session_id, True)
             except urllib.error.HTTPError as error:
                 self._send_json(error.code, {"error": error_detail(error)})
                 return
             except Exception as error:  # noqa: BLE001
                 self._send_json(502, {"error": str(error)})
                 return
-            self._stream_response(upstream)
+            self._stream_response(messages, session_id, upstream)
         else:
             self._send_json(404, {"error": "not found"})
 

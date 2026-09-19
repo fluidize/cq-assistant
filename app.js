@@ -107,10 +107,15 @@ if (location.protocol === "file:") {
   renderHistory();
 }
 
-function renderMarkdown(container, text) {
+function renderMarkdown(container, text, animate) {
   const target = container.querySelector(".message-body") || container;
   if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
     target.textContent = text;
+    if (animate) {
+      animateNewWords(target);
+    } else {
+      target._stream = { length: target.textContent.length };
+    }
     scrollToBottom();
     return;
   }
@@ -119,7 +124,129 @@ function renderMarkdown(container, text) {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
   });
+  if (animate) {
+    animateNewWords(target);
+  } else {
+    target._stream = { length: target.textContent.length };
+  }
   scrollToBottom();
+}
+
+function animateNewWords(target) {
+  const state = target._stream || (target._stream = { length: 0 });
+  const newStart = state.length;
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+
+  let seen = 0;
+  nodes.forEach((textNode) => {
+    const length = textNode.nodeValue.length;
+    const nodeStart = seen;
+    seen += length;
+    if (!textNode.nodeValue.trim()) return;
+    if (nodeStart + length <= newStart) return;
+    wrapWords(textNode, Math.max(0, newStart - nodeStart));
+  });
+  state.length = seen;
+}
+
+function wrapWords(textNode, cut) {
+  const value = textNode.nodeValue;
+  const fresh = value.slice(cut);
+  if (!fresh) return;
+  const fragment = document.createDocumentFragment();
+  const oldPart = value.slice(0, cut);
+  if (oldPart) fragment.append(document.createTextNode(oldPart));
+  fresh.split(/(\s+)/).forEach((token) => {
+    if (!token) return;
+    if (/^\s+$/.test(token)) {
+      fragment.append(document.createTextNode(token));
+    } else {
+      const span = document.createElement("span");
+      span.className = "word";
+      span.textContent = token;
+      fragment.append(span);
+    }
+  });
+  textNode.parentNode.replaceChild(fragment, textNode);
+}
+
+function animateHeight(el, from) {
+  if (!from) return;
+  el.style.transition = "none";
+  el.style.height = from + "px";
+  void el.offsetHeight;
+  el.style.transition = "";
+  void el.offsetHeight;
+  el.style.height = "auto";
+}
+
+function createStreamRenderer(bubble) {
+  const body = bubble.querySelector(".message-body");
+  let committed = 0;
+  let live = null;
+  let liveLength = 0;
+
+  const appendWords = (el, text) => {
+    text.split(/(\s+)/).forEach((token) => {
+      if (!token) return;
+      if (/^\s+$/.test(token)) {
+        el.append(document.createTextNode(token));
+      } else {
+        const span = document.createElement("span");
+        span.className = "word";
+        span.textContent = token;
+        el.append(span);
+      }
+    });
+  };
+
+  const appendMarkdown = (md) => {
+    if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+      body.append(document.createTextNode(md));
+      return;
+    }
+    const template = document.createElement("template");
+    template.innerHTML = DOMPurify.sanitize(marked.parse(md));
+    template.content.querySelectorAll("a").forEach((link) => {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    });
+    body.append(template.content);
+  };
+
+  return (text) => {
+    const from = bubble.getBoundingClientRect().height;
+    const split = text.lastIndexOf("\n\n");
+    const safeEnd = split === -1 ? 0 : split + 2;
+    if (safeEnd > committed) {
+      if (live) {
+        live.remove();
+        live = null;
+        liveLength = 0;
+      }
+      appendMarkdown(text.slice(committed, safeEnd));
+      committed = safeEnd;
+    }
+    const partial = text.slice(safeEnd);
+    if (partial) {
+      if (!live) {
+        live = document.createElement("p");
+        live.className = "live";
+        body.append(live);
+      }
+      appendWords(live, partial.slice(liveLength));
+      liveLength = partial.length;
+    } else if (live) {
+      live.remove();
+      live = null;
+      liveLength = 0;
+    }
+    animateHeight(bubble, from);
+    scrollToBottom();
+  };
 }
 
 async function apiFetch(path, options) {
@@ -236,32 +363,86 @@ promptForm.addEventListener("submit", async (event) => {
 
   const loading = appendLoading();
   let bubble = null;
+  let renderStream = null;
+  let thinking = null;
+  let thinkingBody = null;
+  let toolLog = null;
+  let reasoning = "";
   let reply = "";
+  let sawText = false;
+
+  const ensureBubble = () => {
+    if (bubble) return bubble;
+    loading.remove();
+    bubble = createMessage("assistant");
+    chatScroll.append(bubble);
+    renderStream = createStreamRenderer(bubble);
+    scrollToBottom();
+    return bubble;
+  };
+
+  const onTool = (tool) => {
+    ensureBubble();
+    if (thinking) thinking.classList.remove("thinking-active");
+    if (!toolLog) {
+      toolLog = document.createElement("div");
+      toolLog.className = "tool-log";
+      bubble.insertBefore(toolLog, bubble.querySelector(".message-body"));
+    }
+    toolLog.append(createToolCall(tool));
+    scrollToBottom();
+  };
+
+  const onReasoning = (chunk) => {
+    ensureBubble();
+    if (!thinking) {
+      const from = bubble.getBoundingClientRect().height;
+      thinking = createThinking("");
+      thinking.classList.add("thinking-active");
+      thinkingBody = thinking.querySelector(".thinking-body");
+      bubble.prepend(thinking);
+      animateHeight(bubble, from);
+    }
+    reasoning += chunk;
+    thinkingBody.textContent = reasoning;
+    scrollToBottom();
+  };
 
   const onText = (chunk) => {
-    if (!bubble) {
-      loading.remove();
-      bubble = appendMessage("assistant", "");
+    ensureBubble();
+    if (!sawText) {
+      sawText = true;
+      if (thinking) {
+        thinking.classList.remove("thinking-active");
+      }
     }
     reply += chunk;
-    renderMarkdown(bubble, reply);
+    renderStream(reply);
   };
 
   try {
-    await streamChat(onText);
+    await streamChat(onText, onReasoning, onTool);
   } catch (error) {
     const message = "Error: " + error.message;
     if (bubble) {
       reply += "\n\n" + message;
-      renderMarkdown(bubble, reply);
     } else {
       loading.remove();
       appendMessage("assistant", message);
     }
   }
   loading.remove();
+  if (bubble) {
+    const from = bubble.getBoundingClientRect().height;
+    renderMarkdown(bubble, reply, false);
+    animateHeight(bubble, from);
+  }
   if (reply) {
-    history.push({ role: "assistant", content: reply });
+    history.push({
+      role: "assistant",
+      content: reply,
+      reasoning: reasoning || undefined,
+    });
     saveChat();
   }
 });
@@ -277,7 +458,7 @@ function applyUsage(usage) {
   updateCtxUsage();
 }
 
-async function streamChat(onText) {
+async function streamChat(onText, onReasoning, onTool) {
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -321,6 +502,8 @@ async function streamChat(onText) {
       }
       if (parsed.error) throw new Error(parsed.error);
       if (parsed.usage) applyUsage(parsed.usage);
+      if (parsed.reasoning && onReasoning) onReasoning(parsed.reasoning);
+      if (parsed.tool && onTool) onTool(parsed.tool);
       if (parsed.text) onText(parsed.text);
     }
   }
@@ -344,7 +527,9 @@ promptInput.addEventListener("keydown", (event) => {
 });
 
 function renderHistory() {
-  history.forEach((message) => appendMessage(message.role, message.content));
+  history.forEach((message) =>
+    appendMessage(message.role, message.content, message.reasoning)
+  );
 }
 
 resetBtn.addEventListener("click", () => {
@@ -360,11 +545,14 @@ resetBtn.addEventListener("click", () => {
   stick = true;
 });
 
-function appendMessage(role, text) {
+function appendMessage(role, text, reasoning) {
   const empty = chatScroll.querySelector(".empty");
   if (empty) empty.remove();
 
   const div = createMessage(role);
+  if (role === "assistant" && reasoning) {
+    div.prepend(createThinking(reasoning));
+  }
   if (role === "assistant") {
     renderMarkdown(div, text);
   } else {
@@ -373,6 +561,72 @@ function appendMessage(role, text) {
   chatScroll.append(div);
   scrollToBottom();
   return div;
+}
+
+function createThinking(text) {
+  const details = document.createElement("details");
+  details.className = "thinking";
+  const summary = document.createElement("summary");
+  "Thoughts".split("").forEach((character, index) => {
+    const span = document.createElement("span");
+    span.className = "think-char";
+    span.style.setProperty("--i", index);
+    span.textContent = character;
+    summary.append(span);
+  });
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  body.textContent = text || "";
+  details.append(summary, body);
+  return details;
+}
+
+function createToolCall(tool) {
+  const details = document.createElement("details");
+  details.className = "tool-call";
+
+  const summary = document.createElement("summary");
+  const name = document.createElement("span");
+  name.className = "tool-name";
+  name.textContent = toolLabel(tool);
+  summary.append(name);
+
+  const detail = document.createElement("div");
+  detail.className = "tool-detail";
+  const args = document.createElement("pre");
+  args.className = "tool-args";
+  args.textContent = "arguments: " + (tool.arguments || "{}");
+  const result = document.createElement("pre");
+  result.className = "tool-result";
+  result.textContent = "result: " + truncate(JSON.stringify(tool.result, null, 2), 4000);
+  detail.append(args, result);
+
+  details.append(summary, detail);
+  return details;
+}
+
+function toolLabel(tool) {
+  let args = {};
+  try {
+    args = JSON.parse(tool.arguments || "{}");
+  } catch {
+    args = {};
+  }
+  const result = tool.result || {};
+  switch (tool.name) {
+    case "list_documents":
+      return "Listed documents (" + (result.documents || []).length + ")";
+    case "get_document":
+      return "Read " + (result.name || args.id || "document");
+    case "finish_verification":
+      return "Recorded verification";
+    default:
+      return tool.name;
+  }
+}
+
+function truncate(text, max) {
+  return text.length > max ? text.slice(0, max) + "\n…" : text;
 }
 
 function createMessage(role) {
