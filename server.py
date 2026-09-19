@@ -21,6 +21,7 @@ DEFAULT_MODEL = "mimo-v2.5"
 DEFAULT_CONTEXT_WINDOW = 1000000
 DEFAULT_DOC_LIMIT = 8000
 MAX_TOOL_ROUNDS = 8
+FINDING_TYPES = ["APPROVED", "ERROR", "INFO"]
 
 STATIC_FILES = {
     "/": "index.html",
@@ -69,26 +70,29 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "finish_verification",
-            "description": "Record the final verification result and end the review.",
+            "name": "add_finding",
+            "description": (
+                "Record one verification finding for a document. Call this once "
+                "per finding."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "claim": {
+                    "doc_id": {
                         "type": "string",
-                        "description": "Claim or requirement being verified.",
+                        "description": "Document ID from list_documents.",
                     },
-                    "verdict": {
+                    "finding_type": {
                         "type": "string",
-                        "enum": ["pass", "fail", "needs_review"],
-                        "description": "Verification outcome.",
+                        "enum": FINDING_TYPES,
+                        "description": "APPROVED, ERROR, or INFO.",
                     },
-                    "evidence": {
+                    "notes": {
                         "type": "string",
-                        "description": "Supporting evidence with document citations.",
+                        "description": "What was found, with citations or quotes.",
                     },
                 },
-                "required": ["claim", "verdict", "evidence"],
+                "required": ["doc_id", "finding_type", "notes"],
             },
         },
     },
@@ -104,7 +108,7 @@ def load_config():
 
 CONFIG = load_config()
 DOCUMENTS = {}
-VERIFICATION_RESULTS = []
+FINDINGS = []
 
 
 def context_window():
@@ -148,14 +152,26 @@ def get_document(doc_id, offset=0, limit=None):
     }
 
 
-def finish_verification(claim, verdict, evidence):
+def add_finding(doc_id, finding_type, notes):
+    doc = DOCUMENTS.get(doc_id)
+    if not doc:
+        return {"error": f"document not found: {doc_id}"}
+    if isinstance(finding_type, int):
+        try:
+            finding_type = FINDING_TYPES[finding_type]
+        except IndexError:
+            return {"error": f"finding_type index out of range: {finding_type}"}
+    finding_type = str(finding_type or "").upper()
+    if finding_type not in FINDING_TYPES:
+        return {"error": f"finding_type must be one of {FINDING_TYPES}"}
     result = {
-        "claim": claim or "",
-        "verdict": verdict or "",
-        "evidence": evidence or "",
+        "document_id": doc_id,
+        "name": doc["name"],
+        "type": finding_type,
+        "notes": notes or "",
     }
-    VERIFICATION_RESULTS.append(result)
-    return {"status": "recorded", **result}
+    FINDINGS.append(result)
+    return {"status": "recorded", "index": len(FINDINGS) - 1, **result}
 
 
 def execute_tool(name, arguments):
@@ -171,9 +187,9 @@ def execute_tool(name, arguments):
         return get_document(
             args.get("id"), args.get("offset", 0), args.get("limit")
         )
-    if name == "finish_verification":
-        return finish_verification(
-            args.get("claim"), args.get("verdict"), args.get("evidence")
+    if name == "add_finding":
+        return add_finding(
+            args.get("doc_id"), args.get("finding_type"), args.get("notes")
         )
     return {"error": f"unknown tool: {name}"}
 
@@ -278,7 +294,7 @@ def build_messages(history, document_ids):
             "Documents are available for this request. Use the list_documents "
             "tool to see them and the get_document tool to read their contents "
             "(paging with offset/limit as needed). Do not assume document "
-            "contents. Call finish_verification once you reach a final verdict."
+            "contents. Record each result with add_finding."
         )
     messages = []
     if parts:
@@ -351,7 +367,6 @@ class Handler(BaseHTTPRequestHandler):
                         "tool_calls": calls,
                     }
                 )
-                finished = False
                 for call in calls:
                     result = execute_tool(
                         call["function"]["name"], call["function"]["arguments"]
@@ -372,20 +387,6 @@ class Handler(BaseHTTPRequestHandler):
                             "content": json.dumps(result),
                         }
                     )
-                    if call["function"]["name"] == "finish_verification":
-                        finished = True
-                        self._write_event(
-                            {
-                                "text": (
-                                    "\n\n**Verification recorded**\n\n"
-                                    f"- Claim: {result.get('claim', '')}\n"
-                                    f"- Verdict: {result.get('verdict', '')}\n"
-                                    f"- Evidence: {result.get('evidence', '')}\n"
-                                )
-                            }
-                        )
-                if finished:
-                    break
                 try:
                     upstream = _llm_request(messages, session_id, True)
                 except urllib.error.HTTPError as error:
@@ -448,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                     for doc_id, doc in DOCUMENTS.items()
                 ],
             )
+        elif self.path == "/api/findings":
+            self._send_json(200, FINDINGS)
         else:
             self._send_json(404, {"error": "not found"})
 

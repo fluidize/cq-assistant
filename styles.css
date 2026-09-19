@@ -21,7 +21,7 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 1fr 2fr;
+  grid-template-columns: 1fr 2fr 1fr;
   height: 100vh;
 }
 
@@ -116,11 +116,143 @@ body {
   color: #d98c6a;
 }
 
+.findings {
+  background: #21241a;
+  padding: 16px 16px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.findings-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  flex: none;
+}
+
+.findings-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.finding-filter {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: #5d5f4c;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.filter-sep {
+  color: #3b3f2c;
+  font-size: 13px;
+}
+
+.finding-filter.active {
+  color: #94967e;
+}
+
+.finding-filter.active[data-type="APPROVED"] {
+  color: #a6bb63;
+}
+
+.finding-filter.active[data-type="ERROR"] {
+  color: #d98c6a;
+}
+
+.finding-filter.active[data-type="INFO"] {
+  color: #8fb4c9;
+}
+
+.findings h2 {
+  font-size: 16px;
+  font-weight: 400;
+  color: #94967e;
+}
+
+.findings-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: #191c11;
+  border-radius: 16px;
+  padding: 8px;
+  scrollbar-width: none;
+}
+
+.findings-list::-webkit-scrollbar {
+  display: none;
+}
+
+.findings-list .empty {
+  color: #7c7e68;
+  font-size: 14px;
+  margin: auto;
+}
+
+.findings-list li.finding {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #262a1c;
+  border: 1px solid #3b3f2c;
+  border-radius: 16px;
+  font-size: 14px;
+}
+
+.finding-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.finding-name {
+  color: #e6e5d5;
+  word-break: break-word;
+}
+
+.finding-type {
+  flex: none;
+  color: #94967e;
+}
+
+.finding-type.APPROVED {
+  color: #a6bb63;
+}
+
+.finding-type.ERROR {
+  color: #d98c6a;
+}
+
+.finding-type.INFO {
+  color: #8fb4c9;
+}
+
+.finding-notes {
+  color: #b9bba3;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .chat {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 16px 16px 16px 0;
+  padding: 16px 0;
   gap: 12px;
   background: #21241a;
 }
@@ -232,7 +364,6 @@ body {
   line-height: 1.45;
   word-break: break-word;
   overflow: hidden;
-  transition: height 0.25s ease;
 }
 
 .message.user {
@@ -474,26 +605,6 @@ body {
   height: 6px;
   border-radius: 50%;
   background: #8fa44a;
-  animation: dot-shrink 1s infinite ease-in-out;
-}
-
-.message.loading .dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.message.loading .dot:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes dot-shrink {
-  0%,
-  60%,
-  100% {
-    transform: scale(1);
-  }
-  30% {
-    transform: scale(0.4);
-  }
 }
 
 .prompt-area {

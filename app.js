@@ -5,6 +5,7 @@ const ctxUsage = document.getElementById("ctx-usage");
 const promptForm = document.getElementById("prompt-form");
 const promptInput = document.getElementById("prompt-input");
 const resetBtn = document.getElementById("reset-btn");
+const findingsList = document.getElementById("findings-list");
 
 const HISTORY_KEY = "cq.history";
 const SESSION_KEY = "cq.sessionId";
@@ -104,6 +105,7 @@ if (location.protocol === "file:") {
   updateCtxUsage();
   loadConfig();
   loadDocuments();
+  loadFindings();
   renderHistory();
 }
 
@@ -173,16 +175,6 @@ function wrapWords(textNode, cut) {
   textNode.parentNode.replaceChild(fragment, textNode);
 }
 
-function animateHeight(el, from) {
-  if (!from) return;
-  el.style.transition = "none";
-  el.style.height = from + "px";
-  void el.offsetHeight;
-  el.style.transition = "";
-  void el.offsetHeight;
-  el.style.height = "auto";
-}
-
 function createStreamRenderer(bubble) {
   const body = bubble.querySelector(".message-body");
   let committed = 0;
@@ -218,7 +210,6 @@ function createStreamRenderer(bubble) {
   };
 
   return (text) => {
-    const from = bubble.getBoundingClientRect().height;
     const split = text.lastIndexOf("\n\n");
     const safeEnd = split === -1 ? 0 : split + 2;
     if (safeEnd > committed) {
@@ -244,7 +235,6 @@ function createStreamRenderer(bubble) {
       live = null;
       liveLength = 0;
     }
-    animateHeight(bubble, from);
     scrollToBottom();
   };
 }
@@ -349,6 +339,70 @@ function renderDocuments() {
   });
 }
 
+let findingsData = [];
+const activeFindingTypes = new Set(["APPROVED", "ERROR", "INFO"]);
+
+async function loadFindings() {
+  try {
+    const list = await apiFetch("/api/findings");
+    findingsData = Array.isArray(list) ? list : [];
+    renderFindings();
+  } catch (error) {
+    showError("Could not load findings: " + error.message);
+  }
+}
+
+function renderFindings() {
+  findingsList.innerHTML = "";
+  const visible = findingsData.filter((finding) =>
+    activeFindingTypes.has((finding.type || "").toUpperCase())
+  );
+  if (!visible.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = findingsData.length
+      ? "No matching findings"
+      : "No findings yet";
+    findingsList.append(empty);
+    return;
+  }
+  visible.forEach((finding) => {
+    const li = document.createElement("li");
+    li.className = "finding";
+
+    const head = document.createElement("div");
+    head.className = "finding-head";
+    const name = document.createElement("span");
+    name.className = "finding-name";
+    name.textContent = finding.name || finding.document_id || "document";
+    const type = document.createElement("span");
+    type.className = "finding-type " + (finding.type || "");
+    type.textContent = finding.type || "";
+    head.append(name, type);
+
+    const notes = document.createElement("p");
+    notes.className = "finding-notes";
+    notes.textContent = finding.notes || "";
+
+    li.append(head, notes);
+    findingsList.append(li);
+  });
+}
+
+document.querySelectorAll(".finding-filter").forEach((button) => {
+  button.addEventListener("click", () => {
+    const type = button.dataset.type;
+    if (activeFindingTypes.has(type)) {
+      activeFindingTypes.delete(type);
+      button.classList.remove("active");
+    } else {
+      activeFindingTypes.add(type);
+      button.classList.add("active");
+    }
+    renderFindings();
+  });
+});
+
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const text = promptInput.value.trim();
@@ -396,12 +450,10 @@ promptForm.addEventListener("submit", async (event) => {
   const onReasoning = (chunk) => {
     ensureBubble();
     if (!thinking) {
-      const from = bubble.getBoundingClientRect().height;
       thinking = createThinking("");
       thinking.classList.add("thinking-active");
       thinkingBody = thinking.querySelector(".thinking-body");
       bubble.prepend(thinking);
-      animateHeight(bubble, from);
     }
     reasoning += chunk;
     thinkingBody.textContent = reasoning;
@@ -433,9 +485,7 @@ promptForm.addEventListener("submit", async (event) => {
   }
   loading.remove();
   if (bubble) {
-    const from = bubble.getBoundingClientRect().height;
     renderMarkdown(bubble, reply, false);
-    animateHeight(bubble, from);
   }
   if (reply) {
     history.push({
@@ -445,6 +495,7 @@ promptForm.addEventListener("submit", async (event) => {
     });
     saveChat();
   }
+  loadFindings();
 });
 
 function applyUsage(usage) {
@@ -618,8 +669,8 @@ function toolLabel(tool) {
       return "Listed documents (" + (result.documents || []).length + ")";
     case "get_document":
       return "Read " + (result.name || args.id || "document");
-    case "finish_verification":
-      return "Recorded verification";
+    case "add_finding":
+      return "Recorded finding" + (result.type ? " (" + result.type + ")" : "");
     default:
       return tool.name;
   }
