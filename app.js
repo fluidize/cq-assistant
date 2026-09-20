@@ -10,6 +10,11 @@ const findingModal = document.getElementById("finding-modal");
 const findingModalName = document.getElementById("finding-modal-name");
 const findingModalType = document.getElementById("finding-modal-type");
 const findingModalNotes = document.getElementById("finding-modal-notes");
+const keyModal = document.getElementById("key-modal");
+const keyForm = document.getElementById("key-form");
+const keyInput = document.getElementById("key-input");
+const keyError = document.getElementById("key-error");
+const keyBtn = document.getElementById("key-btn");
 
 const HISTORY_KEY = "cq.history";
 const SESSION_KEY = "cq.sessionId";
@@ -43,6 +48,65 @@ function loadSessionId() {
     localStorage.setItem(SESSION_KEY, id);
   }
   return id;
+}
+
+const DB_NAME = "cq-assistant";
+const DB_VERSION = 1;
+const DOC_STORE = "documents";
+let dbPromise = null;
+
+function openDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DOC_STORE)) {
+        db.createObjectStore(DOC_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return dbPromise;
+}
+
+async function idbAllDocuments() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction(DOC_STORE, "readonly")
+      .objectStore(DOC_STORE)
+      .getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbPutDocument(doc) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DOC_STORE, "readwrite");
+    tx.objectStore(DOC_STORE).put(doc);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbDeleteDocument(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DOC_STORE, "readwrite");
+    tx.objectStore(DOC_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function newDocId() {
+  return window.crypto && crypto.randomUUID
+    ? crypto.randomUUID()
+    : "d-" + Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 function saveChat() {
@@ -81,11 +145,48 @@ async function loadConfig() {
   try {
     const data = await apiFetch("/api/config");
     contextWindow = data.context_window || null;
+    if (!data.has_key) openKeyModal();
   } catch {
     contextWindow = null;
   }
   updateCtxUsage();
 }
+
+function openKeyModal() {
+  keyError.textContent = "";
+  keyInput.value = "";
+  if (!keyModal.open) keyModal.showModal();
+  keyInput.focus();
+}
+
+keyBtn.addEventListener("click", openKeyModal);
+
+keyModal.addEventListener("cancel", (event) => {
+  if (keyModal.dataset.saved !== "true") event.preventDefault();
+});
+
+keyForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const apiKey = keyInput.value.trim();
+  if (!apiKey) {
+    keyError.textContent = "Enter an API key.";
+    return;
+  }
+  try {
+    await apiFetch("/api/key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    keyModal.dataset.saved = "true";
+    keyModal.close();
+    keyModal.dataset.saved = "false";
+    keyInput.value = "";
+    keyError.textContent = "";
+  } catch (error) {
+    keyError.textContent = error.message;
+  }
+});
 
 let stick = true;
 
@@ -216,18 +317,22 @@ fileInput.addEventListener("change", async () => {
     try {
       const isPdf =
         file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-      const content = isPdf
-        ? await readFileBase64(file)
-        : await readFile(file);
-      const doc = await apiFetch("/api/documents", {
+      const raw = isPdf ? await readFileBase64(file) : await readFile(file);
+      const extracted = await apiFetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: file.name,
-          content,
+          content: raw,
           encoding: isPdf ? "base64" : "text",
         }),
       });
+      const doc = {
+        id: newDocId(),
+        name: extracted.name || file.name,
+        content: extracted.content || "",
+      };
+      await idbPutDocument(doc);
       documents.push(doc);
       renderDocuments();
     } catch (error) {
@@ -260,7 +365,7 @@ function readFileBase64(file) {
 
 async function loadDocuments() {
   try {
-    const list = await apiFetch("/api/documents");
+    const list = await idbAllDocuments();
     documents.length = 0;
     documents.push(...list);
     renderDocuments();
@@ -284,7 +389,7 @@ function renderDocuments() {
       'stroke-width="1.8" stroke-linecap="round"/></svg>';
     remove.addEventListener("click", async () => {
       try {
-        await apiFetch("/api/documents/" + doc.id, { method: "DELETE" });
+        await idbDeleteDocument(doc.id);
         documents.splice(documents.indexOf(doc), 1);
         renderDocuments();
       } catch (error) {
@@ -489,7 +594,11 @@ async function streamChat(onText, onReasoning, onTool) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: history,
-      document_ids: documents.map((doc) => doc.id),
+      documents: documents.map((doc) => ({
+        id: doc.id,
+        name: doc.name,
+        content: doc.content,
+      })),
       session_id: sessionId,
     }),
   });

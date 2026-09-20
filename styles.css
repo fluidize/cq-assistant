@@ -314,6 +314,88 @@ body {
   overflow-y: auto;
 }
 
+.key-modal {
+  margin: auto;
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  border-radius: 16px;
+  background: #262a1c;
+  color: #e6e5d5;
+  font-family: inherit;
+}
+
+.key-modal::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.key-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.key-modal h2 {
+  font-size: 18px;
+  font-weight: 400;
+  color: #e6e5d5;
+}
+
+.key-modal-hint {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #94967e;
+}
+
+.key-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-input {
+  flex: 1;
+  min-width: 0;
+  background: #17190f;
+  border: 1px solid #3b3f2c;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #e6e5d5;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+
+.key-input:focus {
+  border-color: #8fa44a;
+}
+
+.key-error {
+  min-height: 18px;
+  font-size: 13px;
+  color: #d98c6a;
+}
+
+.key-save {
+  flex: none;
+  border: none;
+  background: #5f7030;
+  color: #f4f3e6;
+  border-radius: 12px;
+  padding: 11px 18px;
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.2s ease;
+}
+
+.key-save:hover {
+  background: #6f8339;
+}
+
 .chat {
   display: flex;
   flex-direction: column;

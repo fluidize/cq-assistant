@@ -2,7 +2,7 @@
 A commisioning &amp; qualifications document verification app.
 
 ## Installation/Usage
-`pip install pypdf`
+`pip install flask pypdf`
 
 inside project root: `python server.py`
 

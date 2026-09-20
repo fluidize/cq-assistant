@@ -44,6 +44,7 @@
             placeholder="Press enter to send..."
           ></textarea>
         </div>
+        <button type="button" id="key-btn" class="reset-btn">API key</button>
         <button type="button" id="reset-btn" class="reset-btn">New chat</button>
       </form>
     </main>
@@ -77,6 +78,27 @@
       </div>
       <p id="finding-modal-notes" class="finding-modal-notes"></p>
     </div>
+  </dialog>
+
+  <dialog id="key-modal" class="key-modal">
+    <form id="key-form" class="key-modal-body">
+      <h2>API key</h2>
+      <p class="key-modal-hint">
+        Enter your API key.
+      </p>
+      <div class="key-input-row">
+        <input
+          id="key-input"
+          class="key-input"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="sk-..."
+        />
+        <button type="submit" class="key-save">Save key</button>
+      </div>
+      <p id="key-error" class="key-error"></p>
+    </form>
   </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
